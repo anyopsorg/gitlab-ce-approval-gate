@@ -26,6 +26,79 @@ real enforcement on CE without an EE license.
 Both compose — include both in the same pipeline and both run as separate
 jobs; both must pass to allow merge.
 
+## How it looks in practice
+
+Real screenshots from a project running both gates against MRs targeting
+`main`. The usernames you see are just what was configured for that
+project — yours will be your own team. Nothing in the templates is
+project-specific.
+
+### Pipeline blocked when approvals aren't there
+
+![Pipeline list: one MR failed, one passed](docs/screenshots/01-pipeline-blocked-vs-passed.png)
+
+The lower MR was opened without the required approvals — its
+`mr-approval-check` job failed and GitLab refuses to enable the Merge
+button. Once the missing approvers click Approve and the pipeline re-runs
+(top row), both gates pass.
+
+### Both gates run as independent jobs
+
+![Related jobs sidebar showing both gate jobs](docs/screenshots/02-related-jobs-sidebar.png)
+
+`mr-approval-check` (team approval) always runs on MRs to the protected
+branch. `devops-approval-check` only fires when the MR diff touches infra
+files. Both must pass; either can be retried independently.
+
+### Team-approval gate output
+
+![Team gate job log showing gate config, author exclusion, and rule evaluation](docs/screenshots/03-team-gate-job-log.png)
+
+The job prints the configured rules, lists who approved, **excludes the
+MR author from the count** (even if they clicked Approve themselves), and
+reports each gate's status (`OK` / `FAIL`). The pipeline only turns green
+when every configured rule is satisfied.
+
+### Infra-approval gate output
+
+![Infra gate job log showing author auto-counted from the DevOps pool](docs/screenshots/04-infra-gate-job-log.png)
+
+When the MR touches infra files, the second job fires. Note the
+`DevOps author auto-counted: …` line — when the MR author is themselves
+a member of the infra pool, their authorship counts as 1 toward the
+minimum. A solo infra owner editing a Dockerfile doesn't need a second
+click to ship.
+
+### Merge unblocked once both gates pass
+
+![Merged MR view with both gates passed and 3 approvers shown](docs/screenshots/05-merged-after-approvals.png)
+
+With "Pipelines must succeed" enabled (see setup below), the Merge button
+only becomes available after every applicable gate is green. After
+merging, the MR retains the full provenance — who approved, which
+pipelines verified, and the squash/merge details.
+
+### Required GitLab settings
+
+Three settings on each project make the gate actually block merges:
+
+**1. Protect the target branch** — Settings → Repository → Protected
+branches. Allow merge only via MR; nobody can push directly.
+
+![Protected branches setting: main protected, Maintainers can merge, no one can push](docs/screenshots/06-protected-branches-setting.png)
+
+**2. "Pipelines must succeed"** — Settings → Merge requests. This is the
+piece that actually links the gate job's exit code to the Merge button.
+
+![Pipelines must succeed checkbox enabled in merge checks](docs/screenshots/07-pipelines-must-succeed-setting.png)
+
+**3. CI/CD variables** — Settings → CI/CD → Variables. The token plus the
+per-project rules. **Important:** all four must have "Protect variable"
+**unchecked**, because MR pipelines run on the (unprotected) source branch
+and can't see Protected variables.
+
+![CI/CD variables: MR_APPROVAL_GITLAB_TOKEN (Masked), MR_APPROVAL_REQUIRED_USERS, MR_APPROVAL_REQUIRED_USERS_MIN=2, MR_APPROVAL_TARGET_BRANCH=main](docs/screenshots/08-cicd-variables.png)
+
 ## Quick start
 
 ### 1. Include the template(s) in your project's `.gitlab-ci.yml`

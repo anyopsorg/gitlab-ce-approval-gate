@@ -32,6 +32,83 @@ Ikkalasi birgalikda ishlaydi — bir xil pipeline'ga ikkalasini ham include
 qiling, ular alohida job sifatida ishga tushadi va merge uchun ikkalasi
 ham yashil bo'lishi kerak.
 
+## Amalda qanday ko'rinadi
+
+`main`'ga yo'naltirilgan MR'larga ikkala gate'ni ishlatgan loyihadan haqiqiy
+screenshot'lar. Screenshot'lardagi username'lar — shu loyiha uchun sozlangan
+qiymatlar; sizda o'z jamoangiz bo'ladi. Shablonlarning o'zi loyihaga bog'liq
+hech narsa o'z ichida saqlamaydi.
+
+### Tasdiqlar yetmasa pipeline blokirovka qilinadi
+
+![Pipeline ro'yxati: bir MR fail, ikkinchisi passed](docs/screenshots/01-pipeline-blocked-vs-passed.png)
+
+Pastki MR kerakli tasdiqlarsiz ochilgan — uning `mr-approval-check` job'i
+fail qildi va GitLab Merge tugmasini yoqishdan bosh tortdi. Yetmagan
+tasdiqchilar "Approve" bosishi va pipeline qayta ishga tushishi bilan
+(yuqori qatordagi MR), ikkala gate ham o'tdi.
+
+### Ikkala gate alohida job sifatida ishlaydi
+
+![Related jobs paneli ikki gate job bilan](docs/screenshots/02-related-jobs-sidebar.png)
+
+`mr-approval-check` (team approval) himoyalangan branch'ga yo'naltirilgan
+har bir MR'da ishga tushadi. `devops-approval-check` esa faqat MR diff'i
+infra fayllariga tegsa ishga tushadi. Har ikkalasi ham o'tishi kerak;
+har biri alohida retry qilinadi.
+
+### Team-approval gate natijasi
+
+![Team gate job log: gate config, muallifning hisobdan chiqarilishi va qoidalar bahosi](docs/screenshots/03-team-gate-job-log.png)
+
+Job sozlangan qoidalarni chop etadi, kim tasdiqlaganini ro'yxatlaydi,
+**MR muallifini hisobdan chiqaradi** (agar u o'zini Approve qilgan
+bo'lsa ham) va har bir gate uchun holatni (`OK` / `FAIL`) ko'rsatadi.
+Pipeline faqat barcha sozlangan qoidalar bajarilganda yashil bo'ladi.
+
+### Infra-approval gate natijasi
+
+![Infra gate job log: muallif DevOps pulidan avtomatik hisoblangan](docs/screenshots/04-infra-gate-job-log.png)
+
+MR infra fayllariga tegsa, ikkinchi job ishga tushadi.
+`DevOps author auto-counted: …` qatoriga e'tibor bering — agar MR
+muallifining o'zi infra pulida bo'lsa, uning mualliflik qilishi minimal
+hisobiga 1 ta bo'lib qo'shiladi. Yolg'iz infra-egasi Dockerfile'ni
+tahrirlasa, ikkinchi "Approve" bosilishi kerak emas.
+
+### Ikkala gate o'tgach Merge ochiladi
+
+![Merge qilingan MR: ikkala gate yashil, 3 ta tasdiqchi](docs/screenshots/05-merged-after-approvals.png)
+
+"Pipelines must succeed" yoqilgan bo'lsa (sozlash quyida), Merge tugmasi
+faqat barcha tegishli gate'lar yashil bo'lgandagina yoqiladi. Merge
+qilinganidan keyin MR to'liq tarixni saqlab qoladi — kim tasdiqladi,
+qaysi pipeline tekshirdi, va squash/merge tafsilotlari.
+
+### Kerakli GitLab sozlamalari
+
+Gate'ning haqiqatan merge'ni bloklashi uchun har bir loyihada uchta
+sozlama bo'lishi kerak:
+
+**1. Maqsadli branch'ni himoyalang** — Settings → Repository → Protected
+branches. Merge faqat MR orqali bo'lsin; hech kim to'g'ridan-to'g'ri
+push qila olmasin.
+
+![Protected branches sozlamasi: main himoyalangan, Maintainer merge qila oladi, hech kim push qila olmaydi](docs/screenshots/06-protected-branches-setting.png)
+
+**2. "Pipelines must succeed"** — Settings → Merge requests. Aynan shu
+sozlama gate job'ning exit code'ini Merge tugmasi bilan bog'laydi.
+
+![Pipelines must succeed merge checks'da yoqilgan](docs/screenshots/07-pipelines-must-succeed-setting.png)
+
+**3. CI/CD variables** — Settings → CI/CD → Variables. Token va loyihaga
+oid qoidalar. **Muhim:** to'rtta variable ham "Protect variable" belgilash
+**o'chirilgan** holatda bo'lishi kerak — chunki MR pipeline'lari
+(himoyalanmagan) source branch'da ishlaydi va Protected variable'larni
+ko'ra olmaydi.
+
+![CI/CD variables: MR_APPROVAL_GITLAB_TOKEN (Masked), MR_APPROVAL_REQUIRED_USERS, MR_APPROVAL_REQUIRED_USERS_MIN=2, MR_APPROVAL_TARGET_BRANCH=main](docs/screenshots/08-cicd-variables.png)
+
 ## Tezkor boshlash
 
 ### 1. Loyihangizning `.gitlab-ci.yml` fayliga shablonni qo'shing
