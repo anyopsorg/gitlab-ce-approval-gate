@@ -1,5 +1,7 @@
 # gitlab-ce-approval-gate
 
+**🇬🇧 English** | [🇺🇿 O'zbekcha](README.uz.md)
+
 **Hard-enforced Merge Request approvals on GitLab CE.** Two small CI templates
 that fail the pipeline when an MR doesn't have the right approvals, combined
 with GitLab's "Pipelines must succeed" branch protection to actually block
