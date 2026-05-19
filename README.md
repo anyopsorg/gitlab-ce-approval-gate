@@ -175,7 +175,8 @@ To actually block merges:
 | Variable | Default | Purpose |
 |---|---|---|
 | `MR_APPROVAL_GITLAB_TOKEN` | — | **Required.** `read_api`-scoped token, Masked, not Protected. |
-| `MR_APPROVAL_TARGET_BRANCH` | `main` | Branch this gate guards. |
+| `MR_APPROVAL_TARGET_BRANCH` | `main` | Single branch this gate guards (equality match). Used when `MR_APPROVAL_TARGET_PATTERN` is empty. |
+| `MR_APPROVAL_TARGET_PATTERN` | (empty) | Regex literal (including slashes) for multi-branch enforcement — e.g. `/^(staging\|main\|master)$/`. When set, overrides `MR_APPROVAL_TARGET_BRANCH`. |
 | `MR_APPROVAL_MIN_TOTAL` | (unset) | Min distinct approvers, any role. Empty = gate skipped. |
 | `MR_APPROVAL_REQUIRED_USERS` | (unset) | Space-separated usernames in a "required" pool. Empty = gate skipped. |
 | `MR_APPROVAL_REQUIRED_USERS_MIN` | all of pool | How many from the pool must approve. |
@@ -216,6 +217,17 @@ and edit the list at the bottom.
 ```
 MR_APPROVAL_MIN_TOTAL=2
 ```
+
+### Same rule on both staging and master
+
+```
+MR_APPROVAL_TARGET_PATTERN=/^(staging|master)$/
+MR_APPROVAL_MIN_TOTAL=2
+```
+
+Use this when staging is its own quality gate (e.g. backends merging
+`feature → staging` for QA, then `staging → master` for prod), and you
+want peer review enforced at both steps.
 
 ### Mobile team — both leads must approve, plus 1 other dev
 

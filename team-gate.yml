@@ -37,8 +37,18 @@
 #       MR pipelines run on the source (feature) branch which is normally
 #       not protected, and Protected variables are invisible to them.
 #
+#   Target-branch selection (pick one of the two — PATTERN wins if both set):
+#     MR_APPROVAL_TARGET_BRANCH         Single branch name to guard. Equality
+#                                       match.                     Default: main
+#     MR_APPROVAL_TARGET_PATTERN        Regex literal of target branches to
+#                                       guard, including the slashes. Use when
+#                                       you want to enforce team approval on
+#                                       MRs to more than one branch (e.g.
+#                                       staging AND master).
+#                                       Example: /^(staging|main|master)$/
+#                                       Empty = fall back to MR_APPROVAL_TARGET_BRANCH.
+#
 #   Optional gates (set the ones you want — empty/unset = gate is skipped):
-#     MR_APPROVAL_TARGET_BRANCH         Branch this gate guards.   Default: main
 #     MR_APPROVAL_MIN_TOTAL             Min distinct approvers, any role.
 #     MR_APPROVAL_REQUIRED_USERS        Space-separated usernames who count as
 #                                       "required" approvers. Example:
@@ -81,6 +91,7 @@
 variables:
   MR_APPROVAL_IMAGE: alpine:3.20
   MR_APPROVAL_TARGET_BRANCH: "main"
+  MR_APPROVAL_TARGET_PATTERN: ""
   MR_APPROVAL_MIN_TOTAL: ""
   MR_APPROVAL_REQUIRED_USERS: ""
   MR_APPROVAL_REQUIRED_USERS_MIN: ""
@@ -216,4 +227,7 @@ mr-approval-check:
       echo ""
       echo "All approval gates passed — merge to '$CI_MERGE_REQUEST_TARGET_BRANCH_NAME' is allowed."
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $MR_APPROVAL_TARGET_BRANCH
+    # Multi-branch mode: regex pattern wins when set.
+    - if: '$MR_APPROVAL_TARGET_PATTERN != "" && $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ $MR_APPROVAL_TARGET_PATTERN'
+    # Single-branch mode (backward compatible): equality match on MR_APPROVAL_TARGET_BRANCH.
+    - if: '$MR_APPROVAL_TARGET_PATTERN == "" && $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $MR_APPROVAL_TARGET_BRANCH'

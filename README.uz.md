@@ -188,7 +188,8 @@ Merge tugmasini haqiqatan bloklash uchun:
 | Variable | Standart | Vazifasi |
 |---|---|---|
 | `MR_APPROVAL_GITLAB_TOKEN` | — | **Majburiy.** `read_api`-scope'li token, Masked, Protected EMAS. |
-| `MR_APPROVAL_TARGET_BRANCH` | `main` | Ushbu gate himoya qiladigan branch. |
+| `MR_APPROVAL_TARGET_BRANCH` | `main` | Gate himoya qiladigan bitta branch nomi (aniq moslik). `MR_APPROVAL_TARGET_PATTERN` bo'sh bo'lsa ishlatiladi. |
+| `MR_APPROVAL_TARGET_PATTERN` | (bo'sh) | Bir nechta branch'ni himoyalash uchun regex (slash'lar bilan), masalan `/^(staging\|main\|master)$/`. O'rnatilsa, `MR_APPROVAL_TARGET_BRANCH`'dan ustun turadi. |
 | `MR_APPROVAL_MIN_TOTAL` | (yo'q) | Min alohida tasdiqchilar soni, har qanday rol. Bo'sh = gate o'tkazib yuboriladi. |
 | `MR_APPROVAL_REQUIRED_USERS` | (yo'q) | "Talab qilingan" pulda bo'sh joy bilan ajratilgan usernamelar. Bo'sh = gate o'tkazib yuboriladi. |
 | `MR_APPROVAL_REQUIRED_USERS_MIN` | pulning hammasi | Puldan nechta tasdiqlashi kerak. |
@@ -230,6 +231,17 @@ gate kerak bo'lsa, `infra-gate.yml`'ni o'z loyihangizga fork qiling.
 ```
 MR_APPROVAL_MIN_TOTAL=2
 ```
+
+### Bir xil qoida ham staging'da ham master'da
+
+```
+MR_APPROVAL_TARGET_PATTERN=/^(staging|master)$/
+MR_APPROVAL_MIN_TOTAL=2
+```
+
+Staging o'zining sifat darajasi bo'lganda foydali (masalan backend'lar
+`feature → staging` orqali QA'ga, keyin `staging → master` orqali prod'ga
+ketadi) — peer review ikkala bosqichda ham talab qilinadi.
 
 ### Mobil jamoa — ikkita lead va plus 1 ta boshqa dev
 
