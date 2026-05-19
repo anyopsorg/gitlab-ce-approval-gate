@@ -1,0 +1,167 @@
+# Infra Approval Gate — requires at least N approvals from an "infra
+# owners" pool when an MR changes infrastructure files (Dockerfile,
+# .gitlab-ci.yml, entrypoint.sh, helm/). The job ONLY runs when those
+# files change, so pure code-only MRs feel no friction.
+#
+# Composes with team-gate.yml — include both for projects that want
+# team approval AND infra-owner approval on infra changes:
+#
+#   include:
+#     - remote: 'https://raw.githubusercontent.com/anyopsorg/gitlab-ce-approval-gate/main/team-gate.yml'
+#     - remote: 'https://raw.githubusercontent.com/anyopsorg/gitlab-ce-approval-gate/main/infra-gate.yml'
+#
+#   stages:
+#     - validate
+#
+# CI/CD variables:
+#
+#   Required:
+#     MR_APPROVAL_GITLAB_TOKEN          Same token as team-gate.yml uses.
+#                                       Reporter+ access token, read_api scope,
+#                                       Masked, NOT Protected.
+#     MR_APPROVAL_INFRA_USERS           Space-separated usernames in the
+#                                       infra-owners pool. The gate is a no-op
+#                                       until this is set. Example:
+#                                         "infra-lead-1 infra-lead-2 infra-lead-3"
+#
+#   Optional (with sensible defaults):
+#     MR_APPROVAL_INFRA_TARGET_PATTERN  Regex literal of target branches that
+#                                       trigger this gate. Includes slashes.
+#                                       Default: /^(staging|main|master)$/
+#                                       — fires on MRs to staging AND main/master,
+#                                       because infra mistakes break dev too.
+#     MR_APPROVAL_INFRA_MIN             Min approvers from the pool. Default: 1
+#     MR_APPROVAL_HTTP_PROXY            Shared with team-gate.yml.
+#     MR_APPROVAL_NO_PROXY              Shared with team-gate.yml.
+#
+# Author handling (different from team-gate.yml — intentional):
+#   If the MR author IS a member of MR_APPROVAL_INFRA_USERS, they count as
+#   1 toward the gate (their own change implicitly carries their approval).
+#   Other pool members still need to approve to make up any remaining count.
+#   So with MR_APPROVAL_INFRA_MIN=1, a solo infra-owner Dockerfile tweak
+#   passes without needing a second click. If the author is NOT in the pool,
+#   the gate requires real approvals from other pool members.
+#
+#   The reasoning: team-gate.yml enforces "N OTHER teammates must sign off"
+#   (peer review). infra-gate.yml enforces "min N qualified eyes on the
+#   change" — when the author IS qualified, their authorship counts.
+#
+# Path list (file globs that trigger this gate):
+#   Dockerfile, Dockerfile.* (root and subdirs)
+#   .gitlab-ci.yml (root only)
+#   entrypoint.sh (root and subdirs)
+#   helm/** (root-level helm directory, recursive)
+#
+# These are hardcoded in `rules:changes:` because GitLab doesn't accept
+# variable lists there. If you need different paths, fork the file.
+
+variables:
+  MR_APPROVAL_IMAGE: alpine:3.20
+  MR_APPROVAL_INFRA_TARGET_PATTERN: "/^(staging|main|master)$/"
+  MR_APPROVAL_INFRA_USERS: ""
+  MR_APPROVAL_INFRA_MIN: "1"
+  MR_APPROVAL_HTTP_PROXY: ""
+  MR_APPROVAL_NO_PROXY: ""
+
+infra-approval-check:
+  stage: validate
+  image: $MR_APPROVAL_IMAGE
+  variables:
+    GIT_STRATEGY: none
+  before_script:
+    - |
+      if [ -n "${MR_APPROVAL_HTTP_PROXY:-}" ]; then
+        export http_proxy="$MR_APPROVAL_HTTP_PROXY"
+        export https_proxy="$MR_APPROVAL_HTTP_PROXY"
+        export HTTP_PROXY="$MR_APPROVAL_HTTP_PROXY"
+        export HTTPS_PROXY="$MR_APPROVAL_HTTP_PROXY"
+      fi
+      if [ -n "${MR_APPROVAL_NO_PROXY:-}" ]; then
+        export no_proxy="$MR_APPROVAL_NO_PROXY"
+        export NO_PROXY="$MR_APPROVAL_NO_PROXY"
+      fi
+    - apk add --no-cache curl jq >/dev/null
+  script:
+    - |
+      set -eu
+
+      if [ -z "${MR_APPROVAL_GITLAB_TOKEN:-}" ]; then
+        echo "MR_APPROVAL_GITLAB_TOKEN is not set."
+        echo "Add it under Settings -> CI/CD -> Variables (Masked, NOT Protected, read_api scope)."
+        exit 1
+      fi
+
+      if [ -z "${MR_APPROVAL_INFRA_USERS:-}" ]; then
+        echo "MR_APPROVAL_INFRA_USERS is not set — gate is a no-op."
+        echo "Set it to a space-separated list of infra-owner usernames to enforce."
+        exit 0
+      fi
+
+      echo "MR !$CI_MERGE_REQUEST_IID  ($CI_MERGE_REQUEST_SOURCE_BRANCH_NAME -> $CI_MERGE_REQUEST_TARGET_BRANCH_NAME)"
+      echo "This MR touches infrastructure files -> infra approval gate fired."
+      echo "Infra pool: $MR_APPROVAL_INFRA_USERS"
+      echo "Min from pool: $MR_APPROVAL_INFRA_MIN"
+
+      MR_JSON=$(curl -sSf \
+        --header "PRIVATE-TOKEN: $MR_APPROVAL_GITLAB_TOKEN" \
+        "$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_IID")
+      MR_AUTHOR=$(echo "$MR_JSON" | jq -r '.author.username')
+
+      RESP=$(curl -sSf \
+        --header "PRIVATE-TOKEN: $MR_APPROVAL_GITLAB_TOKEN" \
+        "$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_IID/approvals")
+
+      RAW_APPROVED=$(echo "$RESP" | jq -r '.approved_by[].user.username' | sort -u)
+
+      AUTHOR_IS_INFRA=0
+      for U in $MR_APPROVAL_INFRA_USERS; do
+        if [ "$U" = "$MR_AUTHOR" ]; then
+          AUTHOR_IS_INFRA=1
+          break
+        fi
+      done
+
+      MATCHED=0
+      MISSING=""
+
+      if [ "$AUTHOR_IS_INFRA" -eq 1 ]; then
+        echo "  - infra-owner author auto-counted: $MR_AUTHOR"
+        MATCHED=$((MATCHED + 1))
+      else
+        echo "MR author: $MR_AUTHOR (not in infra pool — does not contribute)"
+      fi
+
+      for U in $MR_APPROVAL_INFRA_USERS; do
+        if [ "$U" = "$MR_AUTHOR" ]; then
+          continue
+        fi
+        if printf '%s\n' "$RAW_APPROVED" | grep -qx "$U"; then
+          echo "  - infra-owner approved: $U"
+          MATCHED=$((MATCHED + 1))
+        else
+          MISSING="$MISSING $U"
+        fi
+      done
+
+      if [ "$MATCHED" -lt "$MR_APPROVAL_INFRA_MIN" ]; then
+        echo ""
+        echo "FAIL: this MR touches infra files but has $MATCHED of $MR_APPROVAL_INFRA_MIN required infra-owner approvals."
+        echo "Need at least $MR_APPROVAL_INFRA_MIN approval(s) from any of:$MISSING"
+        echo ""
+        echo "Merge to '$CI_MERGE_REQUEST_TARGET_BRANCH_NAME' is blocked until an infra-owner approves."
+        exit 1
+      fi
+
+      echo ""
+      echo "OK: infra approval gate satisfied ($MATCHED >= $MR_APPROVAL_INFRA_MIN)."
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ $MR_APPROVAL_INFRA_TARGET_PATTERN'
+      changes:
+        - Dockerfile
+        - Dockerfile.*
+        - "**/Dockerfile"
+        - "**/Dockerfile.*"
+        - .gitlab-ci.yml
+        - entrypoint.sh
+        - "**/entrypoint.sh"
+        - helm/**/*

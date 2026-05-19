@@ -1,0 +1,27 @@
+# Example .gitlab-ci.yml using both approval gates.
+# Copy/adapt into your project root as .gitlab-ci.yml.
+
+include:
+  - remote: 'https://raw.githubusercontent.com/anyopsorg/gitlab-ce-approval-gate/main/team-gate.yml'
+  - remote: 'https://raw.githubusercontent.com/anyopsorg/gitlab-ce-approval-gate/main/infra-gate.yml'
+
+stages:
+  - validate
+  # - build
+  # - deploy
+
+# Both jobs (mr-approval-check + infra-approval-check) are contributed by the
+# includes above. Configure them via Settings -> CI/CD -> Variables — all
+# with "Protect variable" UNCHECKED so MR pipelines can read them:
+#
+#   MR_APPROVAL_GITLAB_TOKEN         <project access token, read_api, Masked>
+#   MR_APPROVAL_TARGET_BRANCH        main
+#   MR_APPROVAL_REQUIRED_USERS       "lead-1 lead-2"
+#   MR_APPROVAL_REQUIRED_USERS_MIN   2
+#   MR_APPROVAL_MIN_OTHERS           1
+#   MR_APPROVAL_INFRA_USERS          "infra-lead-1 infra-lead-2 infra-lead-3"
+#   MR_APPROVAL_INFRA_MIN            1
+#
+# Pure code MR -> only mr-approval-check runs; needs 2 leads + 1 other dev.
+# MR touching Dockerfile/CI/helm -> infra-approval-check also runs; needs
+# 1 of 3 infra-owners (the author themselves counts if they're an owner).

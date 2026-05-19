@@ -1,0 +1,219 @@
+# Team Approval Gate — for GitLab CE projects that need to enforce approval
+# requirements on Merge Requests to a protected branch.
+#
+# Why this exists:
+#   GitLab CE doesn't enforce approval rules (Premium/EE only). This template
+#   runs as part of the MR pipeline and fails if the MR doesn't satisfy the
+#   configured approval gates. Combine with "Pipelines must succeed" on the
+#   target protected branch to actually block the merge button.
+#
+# The MR author is ALWAYS excluded from approver counts, regardless of
+# GitLab's "Prevent author approval" setting. So "min 2 approvals" means
+# "min 2 approvals from somebody other than the person who opened the MR".
+#
+# Usage from a project .gitlab-ci.yml:
+#
+#   # Option A — if you mirror this repo into your GitLab instance:
+#   include:
+#     - project: 'your-group/gitlab-ce-approval-gate'
+#       ref: main
+#       file: '/team-gate.yml'
+#
+#   # Option B — fetch directly from a remote URL (no mirror needed):
+#   include:
+#     - remote: 'https://raw.githubusercontent.com/anyopsorg/gitlab-ce-approval-gate/main/team-gate.yml'
+#
+#   stages:
+#     - validate     # add this stage if you don't already have it
+#     - build
+#     - deploy
+#
+# Per-project / per-group CI/CD variables:
+#
+#   Required:
+#     MR_APPROVAL_GITLAB_TOKEN
+#       Project, group, or personal access token with `read_api` scope.
+#       Reporter role is enough. Mark as Masked. Do NOT mark Protected —
+#       MR pipelines run on the source (feature) branch which is normally
+#       not protected, and Protected variables are invisible to them.
+#
+#   Optional gates (set the ones you want — empty/unset = gate is skipped):
+#     MR_APPROVAL_TARGET_BRANCH         Branch this gate guards.   Default: main
+#     MR_APPROVAL_MIN_TOTAL             Min distinct approvers, any role.
+#     MR_APPROVAL_REQUIRED_USERS        Space-separated usernames who count as
+#                                       "required" approvers. Example:
+#                                         "lead-1 lead-2"
+#     MR_APPROVAL_REQUIRED_USERS_MIN    How many from the list must approve.
+#                                       Default: all of them.
+#     MR_APPROVAL_MIN_OTHERS            Min approvers NOT in the required list.
+#                                       Use this for "N leads AND M others".
+#
+# Recipes:
+#
+#   Generic backend service — 2 of any reviewer:
+#     MR_APPROVAL_MIN_TOTAL=2
+#
+#   Mobile team — both leads must approve, plus 1 other dev:
+#     MR_APPROVAL_REQUIRED_USERS="lead-1 lead-2"
+#     MR_APPROVAL_REQUIRED_USERS_MIN=2
+#     MR_APPROVAL_MIN_OTHERS=1
+#
+#   Compliance-critical repo — 1 of 3 security reviewers + 2 others:
+#     MR_APPROVAL_REQUIRED_USERS="sec-alice sec-bob sec-carol"
+#     MR_APPROVAL_REQUIRED_USERS_MIN=1
+#     MR_APPROVAL_MIN_OTHERS=2
+#
+# Branch policy (per project, set in GitLab UI):
+#   Settings -> Repository -> Protected branches:
+#     <target>  Allowed to merge: Maintainers   Allowed to push: No one
+#   Settings -> Merge requests:
+#     [x] Pipelines must succeed
+#     [x] All discussions must be resolved before a merge request can be merged
+#
+# Behind a corporate proxy:
+#   If the runner needs an HTTP proxy to reach the public internet (for the
+#   `apk add curl jq` step), set:
+#     MR_APPROVAL_HTTP_PROXY = http://your-corp-proxy:3128
+#     MR_APPROVAL_NO_PROXY   = .your-internal-domain.example,localhost,127.0.0.1
+#   NO_PROXY uses curl's suffix-match — `.domain.example` matches every
+#   subdomain. Wildcards (`*.domain.example`) are NOT honored by curl.
+
+variables:
+  MR_APPROVAL_IMAGE: alpine:3.20
+  MR_APPROVAL_TARGET_BRANCH: "main"
+  MR_APPROVAL_MIN_TOTAL: ""
+  MR_APPROVAL_REQUIRED_USERS: ""
+  MR_APPROVAL_REQUIRED_USERS_MIN: ""
+  MR_APPROVAL_MIN_OTHERS: ""
+  MR_APPROVAL_HTTP_PROXY: ""
+  MR_APPROVAL_NO_PROXY: ""
+
+mr-approval-check:
+  stage: validate
+  image: $MR_APPROVAL_IMAGE
+  variables:
+    GIT_STRATEGY: none
+  before_script:
+    - |
+      if [ -n "${MR_APPROVAL_HTTP_PROXY:-}" ]; then
+        export http_proxy="$MR_APPROVAL_HTTP_PROXY"
+        export https_proxy="$MR_APPROVAL_HTTP_PROXY"
+        export HTTP_PROXY="$MR_APPROVAL_HTTP_PROXY"
+        export HTTPS_PROXY="$MR_APPROVAL_HTTP_PROXY"
+      fi
+      if [ -n "${MR_APPROVAL_NO_PROXY:-}" ]; then
+        export no_proxy="$MR_APPROVAL_NO_PROXY"
+        export NO_PROXY="$MR_APPROVAL_NO_PROXY"
+      fi
+    - apk add --no-cache curl jq >/dev/null
+  script:
+    - |
+      set -eu
+
+      if [ -z "${MR_APPROVAL_GITLAB_TOKEN:-}" ]; then
+        echo "MR_APPROVAL_GITLAB_TOKEN is not set."
+        echo "Add it under Settings -> CI/CD -> Variables (Masked, NOT Protected, read_api scope)."
+        exit 1
+      fi
+
+      echo "MR !$CI_MERGE_REQUEST_IID  ($CI_MERGE_REQUEST_SOURCE_BRANCH_NAME -> $CI_MERGE_REQUEST_TARGET_BRANCH_NAME)"
+      echo "Gate config:"
+      echo "  MR_APPROVAL_MIN_TOTAL          = ${MR_APPROVAL_MIN_TOTAL:-<unset>}"
+      echo "  MR_APPROVAL_REQUIRED_USERS     = ${MR_APPROVAL_REQUIRED_USERS:-<unset>}"
+      echo "  MR_APPROVAL_REQUIRED_USERS_MIN = ${MR_APPROVAL_REQUIRED_USERS_MIN:-<unset>}"
+      echo "  MR_APPROVAL_MIN_OTHERS         = ${MR_APPROVAL_MIN_OTHERS:-<unset>}"
+
+      MR_JSON=$(curl -sSf \
+        --header "PRIVATE-TOKEN: $MR_APPROVAL_GITLAB_TOKEN" \
+        "$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_IID")
+      MR_AUTHOR=$(echo "$MR_JSON" | jq -r '.author.username')
+
+      RESP=$(curl -sSf \
+        --header "PRIVATE-TOKEN: $MR_APPROVAL_GITLAB_TOKEN" \
+        "$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_IID/approvals")
+
+      RAW_APPROVED_USERS=$(echo "$RESP" | jq -r '.approved_by[].user.username' | sort -u)
+      # Exclude the MR author from approvers.
+      APPROVED_USERS=$(printf '%s\n' "$RAW_APPROVED_USERS" | grep -vx "$MR_AUTHOR" || true)
+      APPROVED_COUNT=$(printf '%s\n' "$APPROVED_USERS" | grep -c . || true)
+
+      echo "MR author: $MR_AUTHOR (excluded from approver count)"
+      echo "----------------------------------------"
+      echo "Counting approvals from ($APPROVED_COUNT):"
+      if [ "$APPROVED_COUNT" -eq 0 ]; then
+        echo "  (no one yet)"
+      else
+        printf '%s\n' "$APPROVED_USERS" | sed 's/^/  - /'
+      fi
+      if printf '%s\n' "$RAW_APPROVED_USERS" | grep -qx "$MR_AUTHOR"; then
+        echo "  (ignored self-approval by $MR_AUTHOR)"
+      fi
+      echo "----------------------------------------"
+
+      FAIL=0
+
+      # ---- Gate 1: minimum total approvers ----
+      if [ -n "${MR_APPROVAL_MIN_TOTAL:-}" ] && [ "$MR_APPROVAL_MIN_TOTAL" -gt 0 ] 2>/dev/null; then
+        if [ "$APPROVED_COUNT" -lt "$MR_APPROVAL_MIN_TOTAL" ]; then
+          echo "FAIL total-approvals: have $APPROVED_COUNT, need $MR_APPROVAL_MIN_TOTAL."
+          FAIL=1
+        else
+          echo "OK   total-approvals: $APPROVED_COUNT >= $MR_APPROVAL_MIN_TOTAL."
+        fi
+      fi
+
+      # ---- Gate 2 + 3 use the required-users split ----
+      if [ -n "${MR_APPROVAL_REQUIRED_USERS:-}" ]; then
+        REQUIRED_TOTAL=$(printf '%s\n' $MR_APPROVAL_REQUIRED_USERS | grep -c . || true)
+        REQUIRED_MIN="${MR_APPROVAL_REQUIRED_USERS_MIN:-$REQUIRED_TOTAL}"
+
+        MATCHED_REQ=0
+        MISSING_REQ=""
+        for U in $MR_APPROVAL_REQUIRED_USERS; do
+          if printf '%s\n' "$APPROVED_USERS" | grep -qx "$U"; then
+            MATCHED_REQ=$((MATCHED_REQ + 1))
+          else
+            MISSING_REQ="$MISSING_REQ $U"
+          fi
+        done
+
+        if [ "$MATCHED_REQ" -lt "$REQUIRED_MIN" ]; then
+          echo "FAIL required-approvers: $MATCHED_REQ/$REQUIRED_MIN matched. Still need:$MISSING_REQ"
+          FAIL=1
+        else
+          echo "OK   required-approvers: $MATCHED_REQ/$REQUIRED_MIN matched from [$MR_APPROVAL_REQUIRED_USERS]."
+        fi
+
+        OTHERS_COUNT=$((APPROVED_COUNT - MATCHED_REQ))
+        if [ -n "${MR_APPROVAL_MIN_OTHERS:-}" ] && [ "$MR_APPROVAL_MIN_OTHERS" -gt 0 ] 2>/dev/null; then
+          if [ "$OTHERS_COUNT" -lt "$MR_APPROVAL_MIN_OTHERS" ]; then
+            echo "FAIL other-approvers: have $OTHERS_COUNT outside the required list, need $MR_APPROVAL_MIN_OTHERS."
+            FAIL=1
+          else
+            echo "OK   other-approvers: $OTHERS_COUNT >= $MR_APPROVAL_MIN_OTHERS."
+          fi
+        fi
+      elif [ -n "${MR_APPROVAL_MIN_OTHERS:-}" ] && [ "$MR_APPROVAL_MIN_OTHERS" -gt 0 ] 2>/dev/null; then
+        if [ "$APPROVED_COUNT" -lt "$MR_APPROVAL_MIN_OTHERS" ]; then
+          echo "FAIL other-approvers (no required list set): have $APPROVED_COUNT, need $MR_APPROVAL_MIN_OTHERS."
+          FAIL=1
+        else
+          echo "OK   other-approvers (no required list set): $APPROVED_COUNT >= $MR_APPROVAL_MIN_OTHERS."
+        fi
+      fi
+
+      if [ -z "${MR_APPROVAL_MIN_TOTAL:-}" ] && [ -z "${MR_APPROVAL_REQUIRED_USERS:-}" ] && [ -z "${MR_APPROVAL_MIN_OTHERS:-}" ]; then
+        echo "No approval gates configured — set MR_APPROVAL_MIN_TOTAL / MR_APPROVAL_REQUIRED_USERS / MR_APPROVAL_MIN_OTHERS."
+        echo "Treating as pass (no-op)."
+      fi
+
+      if [ "$FAIL" -ne 0 ]; then
+        echo ""
+        echo "Merge to '$CI_MERGE_REQUEST_TARGET_BRANCH_NAME' is blocked until approval requirements are met."
+        exit 1
+      fi
+
+      echo ""
+      echo "All approval gates passed — merge to '$CI_MERGE_REQUEST_TARGET_BRANCH_NAME' is allowed."
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == $MR_APPROVAL_TARGET_BRANCH
